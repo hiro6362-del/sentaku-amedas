@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>洗濯アメダス</title>
+<meta name="theme-color" content="#2f5d8a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="洗濯アメダス">
+<style>
+/* 1カラム：地点チップ → 判定 → 家の近くの地図＋時間スライダー → 24時間グラフ（スライダーと連動） */
+:root{
+  --bg:#f3f6f8; --surface:#ffffff; --ink:#1c2a36; --muted:#5f7180; --line:#d9e2e8;
+  --accent:#2f5d8a; --dry:#2e8b57; --wet:#c9472b; --shade:#e8eff5;
+  --r1:#a6d0f5; --r2:#3d8fe0; --r3:#1c4fb8; --r4:#f2b632; --r5:#e0452b;
+  --tile-filter:none;
+  --font:"Hiragino Sans","Noto Sans JP","Yu Gothic UI",system-ui,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1720; --surface:#17222d; --ink:#e3ebf1; --muted:#93a5b3; --line:#2a3946;
+  --accent:#7fb2e5; --dry:#5cc489; --wet:#ef7a5f; --shade:#1d2b38;
+  --r1:#5f8fbf; --r2:#4f9cec; --r3:#8fb6ff; --r4:#f2c04a; --r5:#ff6a4d;
+  --tile-filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9);
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 var(--font);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:14px}
+h1{font-size:20px;margin:0;letter-spacing:.02em}
+.sub{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+button,select,input{font:inherit;color:inherit}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:8px 12px;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--surface);font-weight:600}
+.btn:focus-visible,select:focus-visible,input:focus-visible,.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.chip{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 14px;cursor:pointer;white-space:nowrap}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface);font-weight:600}
+.hang{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.hang input{border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--surface);color:var(--ink)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.place{font-weight:700;font-size:17px}
+.station{color:var(--muted);font-size:12px}
+.verdict{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-radius:10px;padding:10px 12px;background:var(--shade)}
+.verdict b{font-size:18px}
+.verdict.dry b{color:var(--dry)} .verdict.wet b{color:var(--wet)}
+.verdict .detail{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.icon-btn{border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;padding:4px 6px}
+
+/* 地図 */
+.map{position:relative;height:300px;border-radius:10px;overflow:hidden;background:var(--shade);touch-action:pan-y}
+.map img{position:absolute;width:256px;height:256px;filter:var(--tile-filter);user-select:none;-webkit-user-drag:none}
+.map svg{position:absolute;inset:0;width:100%;height:100%}
+.mk-label{font-size:11px;fill:var(--ink);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
+.mk-val{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+.attr{position:absolute;right:4px;bottom:2px;font-size:10px;color:var(--muted);background:var(--surface);opacity:.85;padding:0 4px;border-radius:4px}
+.attr a{color:inherit}
+
+.timebar{display:flex;align-items:center;gap:10px}
+.now{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.now small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+.timebar .grow{flex:1;min-width:0;font-size:13px;color:var(--muted)}
+.play{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--surface);cursor:pointer;display:grid;place-items:center}
+.play svg{width:18px;height:18px;fill:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:3px;vertical-align:-1px}
+
+/* 24時間グラフ */
+.chart{position:relative;height:80px;display:flex;align-items:flex-end;border-bottom:1px solid var(--line);cursor:pointer}
+.bar{flex:1;background:var(--r2);position:relative;z-index:1}
+.bar.missing{background:repeating-linear-gradient(45deg,var(--line) 0 2px,transparent 2px 4px);height:100%!important;opacity:.5}
+.since{position:absolute;top:0;bottom:0;left:0;background:var(--shade);pointer-events:none}
+.cursor{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--ink);z-index:2;pointer-events:none}
+.axis{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.scale{font-size:11px;color:var(--muted)}
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:14px;padding:20px;text-align:center;color:var(--muted)}
+.err{color:var(--wet)}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);width:min(520px,calc(100vw - 32px));padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+.form{display:flex;flex-direction:column;gap:10px}
+.form select,.form input{border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--bg);width:100%}
+.row{display:flex;gap:8px}
+.row>*{flex:1;min-width:0}
+.cands{display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow:auto}
+.cand{display:flex;justify-content:space-between;gap:8px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 10px;cursor:pointer;background:var(--bg);text-align:left}
+.cand small{color:var(--muted);font-variant-numeric:tabular-nums}
+.note{font-size:12px;color:var(--muted)}
+footer{font-size:11px;color:var(--muted);text-align:center}
+footer a{color:var(--muted)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>洗濯アメダス</h1>
+      <div class="sub" id="updated">読み込み中…</div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" id="reload" type="button">更新</button>
+      <button class="btn primary" id="add" type="button">＋地点</button>
+    </div>
+  </header>
+
+  <div class="chips" id="chips" role="group" aria-label="登録した地点"></div>
+
+  <div class="hang">
+    <label for="hangTime">干した時刻</label>
+    <input type="time" id="hangTime" value="07:30" step="600">
+    <span>この時刻から今までに降ったかを判定します</span>
+  </div>
+
+  <div id="main"></div>
+
+  <footer>出典：<a href="https://www.jma.go.jp/bosai/amedas/" target="_blank" rel="noopener">気象庁ホームページ（アメダス）</a>を加工して表示。地図は<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>。速報値のため後で修正されることがあります。</footer>
+</div>
+
+<dialog id="dlg">
+  <form class="form" id="addForm" method="dialog">
+    <strong>地点を追加（最大5件）</strong>
+    <div class="row">
+      <select id="pref" aria-label="都道府県"></select>
+      <input id="city" placeholder="市区町村名（例：練馬区）" aria-label="市区町村名" autocomplete="off">
+    </div>
+    <div class="row">
+      <button class="btn primary" id="search" type="button">近くのアメダスを探す</button>
+      <button class="btn" type="button" id="close">閉じる</button>
+    </div>
+    <div class="note" id="searchMsg">市区町村を入れると、近い観測地点を3つ出します。いちばん見たい地点を選んでください。</div>
+    <div class="cands" id="cands"></div>
+  </form>
+</dialog>
+
+<script>
+const JMA = "https://www.jma.go.jp/bosai/amedas";
+const GSI = "https://msearch.gsi.go.jp/address-search/AddressSearch?q=";
+const TILE = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png";
+const MAX = 5, NEAR = 7, NEAR_KM = 30, STEPS = 144;
+const PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県","新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県","奈良県","和歌山県","鳥取県","島根県","岡山県","広島県","山口県","徳島県","香川県","愛媛県","高知県","福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"];
+
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; }catch{ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} }
+};
+let places = store.get("places", []);   // [{label, code, stName, lat, lon}]
+let sel = Math.min(store.get("sel", 0), Math.max(0, places.length - 1));
+let table = null, latest = null, idx = STEPS - 1, timer = null;
+const seriesCache = new Map();          // code -> series
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, "0");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// 日本時間の各フィールドを取り出す（端末のタイムゾーンに依存しない）
+function jst(d){ const t = new Date(d.getTime() + 9*3600e3);
+  return {y:t.getUTCFullYear(), mo:t.getUTCMonth()+1, d:t.getUTCDate(), h:t.getUTCHours(), mi:t.getUTCMinutes()}; }
+function keyOf(d){ const j = jst(d); return `${j.y}${pad(j.mo)}${pad(j.d)}${pad(j.h)}${pad(j.mi)}00`; }
+function hm(d){ const j = jst(d); return `${pad(j.h)}:${pad(j.mi)}`; }
+
+async function getJSON(url){
+  const r = await fetch(url, {cache:"no-cache"});
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+async function loadTable(){ return table || (table = await getJSON(`${JMA}/const/amedastable.json`)); }
+const toDeg = a => a[0] + a[1]/60;
+const hasRain = st => !st.elems || st.elems[1] === "1";
+function km(lat1, lon1, lat2, lon2){
+  const dy = (lat2 - lat1) * 111, dx = (lon2 - lon1) * 111 * Math.cos(lat1 * Math.PI / 180);
+  return Math.hypot(dx, dy);
+}
+function nearby(lat, lon, n){
+  return Object.entries(table).filter(([, s]) => hasRain(s))
+    .map(([code, s]) => ({code, s, lat: toDeg(s.lat), lon: toDeg(s.lon), km: km(lat, lon, toDeg(s.lat), toDeg(s.lon))}))
+    .sort((a, b) => a.km - b.km).slice(0, n);
+}
+
+// 最新時刻から24時間分（3時間ごとのファイル9つ）を集める
+async function loadSeries(code){
+  if(seriesCache.has(code)) return seriesCache.get(code);
+  const files = new Set();
+  for(let i=0;i<=8;i++){
+    const j = jst(new Date(latest.getTime() - i*3*3600e3));
+    files.add(`${j.y}${pad(j.mo)}${pad(j.d)}_${pad(Math.floor(j.h/3)*3)}`);
+  }
+  const parts = await Promise.all([...files].map(f =>
+    getJSON(`${JMA}/data/point/${code}/${f}.json`).catch(() => ({}))));
+  const all = Object.assign({}, ...parts);
+  const out = [];
+  for(let i = 0; i < STEPS; i++){
+    const d = new Date(latest.getTime() - (STEPS - 1 - i) * 600e3), rec = all[keyOf(d)];
+    const p = rec && rec.precipitation10m;
+    out.push({t:d, mm: p && p[0] != null ? p[0] : null});
+  }
+  seriesCache.set(code, out);
+  return out;
+}
+
+function hangStart(){
+  const [h, m] = ($("hangTime").value || "07:30").split(":").map(Number);
+  const j = jst(latest);
+  let t = Date.UTC(j.y, j.mo-1, j.d, h - 9, m);   // 今日のその時刻（JST）。まだ来ていなければ前日
+  if(t > latest.getTime()) t -= 24*3600e3;
+  return new Date(t);
+}
+
+// 10分間降水量の色（気象庁の雨の強さの目安を10分値に換算）
+function rainColor(mm){
+  if(mm == null) return null;
+  if(mm <= 0) return null;
+  if(mm < 1) return "var(--r1)";       // 〜6mm/h 相当
+  if(mm < 3) return "var(--r2)";       // 〜18mm/h
+  if(mm < 5) return "var(--r3)";       // 〜30mm/h
+  if(mm < 8) return "var(--r4)";       // 〜50mm/h
+  return "var(--r5)";
+}
+
+/* ---------- 地図（Webメルカトル、地理院タイル） ---------- */
+const wx = (lon, z) => (lon + 180) / 360 * 256 * 2**z;
+const wy = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * 256 * 2**z; };
+
+function buildMap(el, home, stations){
+  const W = el.clientWidth || 360, H = el.clientHeight || 300;
+  let z = 13;
+  while(z > 8 && stations.some(s => Math.abs(wx(s.lon, z) - wx(home.lon, z)) > W/2 - 30 || Math.abs(wy(s.lat, z) - wy(home.lat, z)) > H/2 - 30)) z--;
+  const cx = wx(home.lon, z), cy = wy(home.lat, z), x0 = cx - W/2, y0 = cy - H/2;
+  let html = "";
+  for(let tx = Math.floor(x0/256); tx <= Math.floor((x0+W)/256); tx++)
+    for(let ty = Math.floor(y0/256); ty <= Math.floor((y0+H)/256); ty++)
+      html += `<img alt="" loading="lazy" onerror="this.hidden=true" src="${TILE.replace("{z}", z).replace("{x}", tx).replace("{y}", ty)}" style="left:${tx*256 - x0}px;top:${ty*256 - y0}px">`;
+  const pts = stations.map(s => ({...s, x: wx(s.lon, z) - x0, y: wy(s.lat, z) - y0}));
+  let svg = `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">`;
+  // 家
+  svg += `<g transform="translate(${W/2},${H/2})"><path d="M-8 2 L0 -7 L8 2 L8 9 L-8 9 Z" fill="var(--ink)" stroke="var(--surface)" stroke-width="2"/></g>`;
+  pts.forEach((p, i) => {
+    svg += `<g class="mk" data-i="${i}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">
+      <circle r="${i === 0 ? 17 : 14}" fill="var(--surface)" stroke="var(--muted)" stroke-width="${i === 0 ? 3 : 1.5}"/>
+      <text class="mk-val" text-anchor="middle" dy="4" fill="var(--ink)"></text>
+      <text class="mk-label" text-anchor="middle" y="${i === 0 ? 31 : 27}">${esc(p.s.kjName)}</text></g>`;
+  });
+  svg += `</svg><div class="attr"><a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a></div>`;
+  el.innerHTML = html + svg;
+}
+
+function paintMap(el, seriesList){
+  el.querySelectorAll(".mk").forEach(g => {
+    const s = seriesList[+g.dataset.i][idx];
+    const c = rainColor(s.mm), circle = g.querySelector("circle"), val = g.querySelector(".mk-val");
+    circle.setAttribute("fill", c || "var(--surface)");
+    circle.setAttribute("stroke-dasharray", s.mm == null ? "3 3" : "");
+    val.textContent = s.mm == null ? "欠" : s.mm > 0 ? s.mm.toFixed(1) : "0";
+    val.setAttribute("fill", c && s.mm >= 3 && s.mm < 5 || c && s.mm >= 8 ? "var(--surface)" : "var(--ink)");
+  });
+}
+
+/* ---------- 画面 ---------- */
+function renderChips(){
+  $("chips").innerHTML = "";
+  places.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip"; b.textContent = p.label;
+    b.setAttribute("aria-pressed", i === sel);
+    b.onclick = () => { sel = i; store.set("sel", sel); stop(); renderChips(); renderMain(); };
+    $("chips").appendChild(b);
+  });
+}
+
+async function renderMain(){
+  const main = $("main");
+  if(!places.length){
+    main.innerHTML = `<div class="empty">まだ地点がありません。<br>「＋地点」から市区町村を選んで登録してください（最大5件）。</div>`;
+    $("updated").textContent = "地点を登録すると表示します";
+    return;
+  }
+  const p = places[sel];
+  try{
+    await loadTable();
+    const homeSt = table[p.code];
+    const home = {lat: p.lat ?? toDeg(homeSt.lat), lon: p.lon ?? toDeg(homeSt.lon)};
+    const others = nearby(home.lat, home.lon, NEAR + 1).filter(n => n.code !== p.code && n.km <= NEAR_KM).slice(0, NEAR - 1);
+    const stations = [{code: p.code, s: homeSt, lat: toDeg(homeSt.lat), lon: toDeg(homeSt.lon)}, ...others];
+    const seriesList = await Promise.all(stations.map(s => loadSeries(s.code)));
+    drawPanel(p, stations, seriesList, home);
+    $("updated").textContent = `${hm(latest)} 時点の観測`;
+  }catch(e){
+    main.innerHTML = `<div class="empty err">データを読み込めませんでした（${esc(e.message)}）。通信状態を確かめて「更新」を押してください。</div>`;
+    $("updated").textContent = "読み込み失敗";
+  }
+}
+
+function drawPanel(p, stations, seriesList, home){
+  const series = seriesList[0], from = hangStart();
+  const inRange = series.filter(s => s.t > from), wet = inRange.filter(s => s.mm > 0);
+  const total = wet.reduce((a, s) => a + s.mm, 0), missing = inRange.filter(s => s.mm == null).length;
+  const max = Math.max(1, ...series.map(s => s.mm || 0));
+  const verdict = wet.length
+    ? `<div class="verdict wet"><b>降った</b><span class="detail">${hm(new Date(wet[0].t - 600e3))}〜${hm(wet[wet.length-1].t)}　合計 ${total.toFixed(1)} mm</span></div>`
+    : `<div class="verdict dry"><b>降ってない</b><span class="detail">${hm(from)} 以降 0.0 mm${missing ? `（欠測 ${missing} 回）` : ""}</span></div>`;
+  const sincePct = Math.max(0, Math.min(100, (from - series[0].t + 600e3) / (24*3600e3) * 100));
+  const bars = series.map(s => s.mm == null ? `<div class="bar missing"></div>`
+    : `<div class="bar" style="height:${s.mm > 0 ? Math.max(4, s.mm / max * 100) : 0}%;background:${rainColor(s.mm) || "transparent"}"></div>`).join("");
+  const ticks = [0, 36, 72, 108, 143].map(i => `<span>${hm(series[i].t)}</span>`).join("");
+
+  $("main").innerHTML = `
+  <section class="card">
+    <div class="card-head">
+      <div><div class="place">${esc(p.label)}</div><div class="station">アメダス ${esc(p.stName)}（太い丸）と近くの${stations.length - 1}地点</div></div>
+      <button class="icon-btn" type="button" id="del">削除</button>
+    </div>
+    ${verdict}
+    <div class="map" id="map"></div>
+    <div class="timebar">
+      <div class="now" id="now"></div>
+      <div class="grow" id="nowNote"></div>
+      <button class="play" type="button" id="play" aria-label="干した時刻から再生"></button>
+    </div>
+    <input type="range" id="slider" min="0" max="${STEPS - 1}" step="1" aria-label="時刻">
+    <div class="legend"><span>10分間の雨量</span><span><i style="background:var(--r1)"></i>0.5</span><span><i style="background:var(--r2)"></i>1〜</span><span><i style="background:var(--r3)"></i>3〜</span><span><i style="background:var(--r4)"></i>5〜</span><span><i style="background:var(--r5)"></i>8mm〜</span></div>
+    <div class="chart" id="chart"><div class="since" style="width:${sincePct}%"></div>${bars}<div class="cursor" id="cursor"></div></div>
+    <div class="axis">${ticks}</div>
+    <div class="scale">${esc(p.stName)}の10分ごとの雨量${series.some(s => s.mm > 0) ? `・最大 ${max.toFixed(1)} mm` : "・24時間雨なし"}（色の薄い範囲は干す前）。グラフをタップするとその時刻に移動します。</div>
+  </section>`;
+
+  const map = $("map");
+  buildMap(map, home, stations);
+  const slider = $("slider");
+  const update = () => {
+    slider.value = idx;
+    const s = series[idx];
+    $("now").innerHTML = `${hm(s.t)}<small>までの10分</small>`;
+    const wetNow = seriesList.filter(l => l[idx].mm > 0).length;
+    $("nowNote").textContent = s.mm == null ? `${p.stName}は欠測` : s.mm > 0 ? `${p.stName} ${s.mm.toFixed(1)}mm・近くで${wetNow}地点が雨` : wetNow ? `${p.stName}は0mm・近くで${wetNow}地点が雨` : "近くはどこも降っていません";
+    $("cursor").style.left = `${(idx + .5) / STEPS * 100}%`;
+    paintMap(map, seriesList);
+  };
+  slider.oninput = () => { stop(); idx = +slider.value; update(); };
+  $("chart").onclick = e => { const r = e.currentTarget.getBoundingClientRect(); stop(); idx = Math.max(0, Math.min(STEPS-1, Math.floor((e.clientX - r.left) / r.width * STEPS))); update(); };
+  $("play").onclick = () => {
+    if(timer){ stop(); return; }
+    const start = series.findIndex(s => s.t > from);
+    if(idx >= STEPS - 1 || idx < start) idx = Math.max(0, start);
+    setPlayIcon(true);
+    timer = setInterval(() => { if(idx >= STEPS - 1){ stop(); return; } idx++; update(); }, 180);
+  };
+  $("del").onclick = () => {
+    places.splice(sel, 1); store.set("places", places);
+    sel = 0; store.set("sel", 0); stop(); renderChips(); renderMain();
+  };
+  setPlayIcon(false);
+  update();
+}
+function setPlayIcon(playing){
+  const b = $("play"); if(!b) return;
+  b.innerHTML = playing ? `<svg viewBox="0 0 18 18"><rect x="3" y="2" width="4" height="14"/><rect x="11" y="2" width="4" height="14"/></svg>`
+                        : `<svg viewBox="0 0 18 18"><path d="M4 2 L16 9 L4 16 Z"/></svg>`;
+  b.setAttribute("aria-label", playing ? "止める" : "干した時刻から再生");
+}
+function stop(){ if(timer){ clearInterval(timer); timer = null; } setPlayIcon(false); }
+
+async function refresh(){
+  if(!places.length){ renderChips(); renderMain(); return; }
+  $("updated").textContent = "読み込み中…";
+  try{
+    latest = new Date((await (await fetch(`${JMA}/data/latest_time.txt`, {cache:"no-cache"})).text()).trim());
+    if(isNaN(latest)) throw new Error("時刻を読めません");
+  }catch(e){
+    $("main").innerHTML = `<div class="empty err">気象庁のデータを読み込めませんでした（${esc(e.message)}）。通信状態を確かめて「更新」を押してください。</div>`;
+    $("updated").textContent = "読み込み失敗"; return;
+  }
+  seriesCache.clear(); idx = STEPS - 1; stop();
+  renderChips(); renderMain();
+}
+
+/* ---------- 地点追加 ---------- */
+PREFS.forEach(p => $("pref").add(new Option(p, p)));
+$("pref").value = store.get("pref", "東京都");
+$("add").onclick = () => {
+  $("searchMsg").textContent = places.length >= MAX ? "登録は5件までです。どれかを削除してから追加してください。" : "市区町村を入れると、近い観測地点を3つ出します。いちばん見たい地点を選んでください。";
+  $("cands").innerHTML = ""; $("dlg").showModal(); $("city").focus();
+};
+$("close").onclick = () => $("dlg").close();
+$("city").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); search(); } });
+$("search").onclick = search;
+
+async function search(){
+  const pref = $("pref").value, city = $("city").value.trim();
+  store.set("pref", pref);
+  if(!city){ $("searchMsg").textContent = "市区町村名を入れてください。"; return; }
+  $("searchMsg").textContent = "探しています…"; $("cands").innerHTML = "";
+  try{
+    const [geo] = await Promise.all([getJSON(GSI + encodeURIComponent(pref + city)), loadTable()]);
+    const hit = geo.find(g => g.properties.title.startsWith(pref)) || geo[0];
+    if(!hit){ $("searchMsg").textContent = "その市区町村が見つかりませんでした。表記を変えて試してください。"; return; }
+    const [lon, lat] = hit.geometry.coordinates;
+    $("searchMsg").textContent = `「${hit.properties.title}」に近い観測地点です。タップで登録します。`;
+    nearby(lat, lon, 3).forEach(n => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "cand";
+      b.innerHTML = `<span>${esc(n.s.kjName)}（${esc(n.s.knName)}）</span><small>約 ${n.km.toFixed(1)} km</small>`;
+      b.onclick = () => {
+        if(places.length >= MAX){ $("searchMsg").textContent = "登録は5件までです。"; return; }
+        places.push({label: city, code: n.code, stName: n.s.kjName, lat, lon});
+        sel = places.length - 1; store.set("places", places); store.set("sel", sel);
+        $("dlg").close(); $("city").value = "";
+        latest ? (renderChips(), renderMain()) : refresh();
+      };
+      $("cands").appendChild(b);
+    });
+  }catch(e){
+    $("searchMsg").textContent = `検索できませんでした（${e.message}）。通信状態を確かめてください。`;
+  }
+}
+
+$("hangTime").value = store.get("hang", "07:30");
+$("hangTime").addEventListener("change", () => { store.set("hang", $("hangTime").value); if(latest) renderMain(); });
+$("reload").onclick = refresh;
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible" && places.length) refresh(); });
+refresh();
+
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
