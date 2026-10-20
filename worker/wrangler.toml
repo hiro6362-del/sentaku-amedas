@@ -1,0 +1,12 @@
+# 雨雲画像を24時間ためるサーバー（Cloudflare Workers + D1）
+name = "sentaku-radar"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sentaku-radar"
+database_id = "__DATABASE_ID__"   # デプロイ時にGitHub Actionsが書き換える

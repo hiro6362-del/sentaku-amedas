@@ -1,0 +1,50 @@
+name: 雨雲保存サーバーを公開
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**", ".github/workflows/deploy-worker.yml"]
+  workflow_dispatch:
+
+concurrency: deploy-worker
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER: npx --yes wrangler@4.145.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 鍵が登録されているか確認
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN と CLOUDFLARE_ACCOUNT_ID をリポジトリのSecretsに登録してください"
+            exit 1
+          fi
+
+      - name: データベースを用意
+        run: |
+          id=$($WRANGLER d1 list --json | jq -r '.[] | select(.name=="sentaku-radar") | .uuid')
+          if [ -z "$id" ]; then
+            $WRANGLER d1 create sentaku-radar
+            id=$($WRANGLER d1 list --json | jq -r '.[] | select(.name=="sentaku-radar") | .uuid')
+          fi
+          echo "database id: $id"
+          sed -i "s/__DATABASE_ID__/$id/" wrangler.toml
+          $WRANGLER d1 execute sentaku-radar --remote --file=schema.sql
+
+      - name: サーバーを公開
+        run: |
+          $WRANGLER deploy | tee deploy.log
+          url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          echo "WORKER_URL=$url"
+          echo "### 雨雲保存サーバー: $url" >> "$GITHUB_STEP_SUMMARY"

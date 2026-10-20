@@ -67,6 +67,13 @@ button,select,input{font:inherit;color:inherit}
 .mapctl button{width:36px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:20px;line-height:1;cursor:pointer}
 .mapctl button:disabled{opacity:.4;cursor:default}
 .maptag{position:absolute;left:8px;top:8px;z-index:3;font-size:11px;background:var(--surface);color:var(--muted);opacity:.9;padding:2px 6px;border-radius:6px;font-variant-numeric:tabular-nums}
+.keep{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--line);padding-top:10px}
+.keep label{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600;font-size:14px;cursor:pointer}
+.keep input{appearance:none;-webkit-appearance:none;width:44px;height:26px;border-radius:13px;background:var(--line);position:relative;cursor:pointer;flex:none;transition:background .15s}
+.keep input::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--surface);transition:left .15s}
+.keep input:checked{background:var(--accent)}
+.keep input:checked::after{left:21px}
+.keep p{margin:0;font-size:12px;color:var(--muted)}
 .attr{position:absolute;right:4px;bottom:2px;font-size:10px;color:var(--muted);background:var(--surface);opacity:.85;padding:0 4px;border-radius:4px}
 .attr a{color:inherit}
 
@@ -153,6 +160,7 @@ const JMA = "https://www.jma.go.jp/bosai/amedas";
 const GSI = "https://msearch.gsi.go.jp/address-search/AddressSearch?q=";
 const TILE = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png";
 const NOWC = "https://www.jma.go.jp/bosai/jmatile/data/nowc";
+const RADAR_API = "";   // 雨雲を24時間ためるサーバー（Cloudflare Workers）。空なら機能を隠す
 const MAX = 5, NEAR = 7, NEAR_KM = 30, STEPS = 144;
 const PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県","新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県","奈良県","和歌山県","鳥取県","島根県","岡山県","広島県","山口県","徳島県","香川県","愛媛県","高知県","福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"];
 
@@ -164,6 +172,7 @@ let places = store.get("places", []);   // [{label, code, stName, lat, lon}]
 let sel = Math.min(store.get("sel", 0), Math.max(0, places.length - 1));
 let table = null, latest = null, idx = STEPS - 1, timer = null;
 let radarTimes = new Map();            // validtime(UTC文字列) -> basetime
+let storedTimes = new Set();           // サーバーにためてある時刻（UTC文字列）
 let zoomDelta = store.get("zoom", 0);   // 地図の拡大段階（0＝近くの地点が全部入る広さ）
 const seriesCache = new Map();          // code -> series
 
@@ -246,6 +255,11 @@ async function loadRadarTimes(){
     const list = await getJSON(`${NOWC}/targetTimes_N1.json`);
     radarTimes = new Map(list.filter(t => !t.elements || t.elements.includes("hrpns")).map(t => [t.validtime, t.basetime]));
   }catch{ radarTimes = new Map(); }
+  storedTimes = new Set();
+  if(RADAR_API && places.some(p => p.radarId)){
+    try{ storedTimes = new Set(await getJSON(`${RADAR_API}/times`)); }catch{}
+    places.filter(p => p.radarId).forEach(p => fetch(`${RADAR_API}/places/${p.radarId}/seen`, {method:"POST"}).catch(() => {}));
+  }
 }
 
 let view = null;   // いま描いている地図の状態
@@ -282,21 +296,23 @@ function buildMap(el, home, stations){
 // レーダー画像を重ねる（気象庁のタイルは偶数ズーム・最大10。足りない分は拡大して貼る）
 function paintRadar(t){
   if(!view) return;
-  const key = utcKey(t), base = radarTimes.get(key), layer = view.el.querySelector(".radar"), tag = $("radarTag");
-  if(!base){
+  const key = utcKey(t), base = radarTimes.get(key), stored = !base && storedTimes.has(key);
+  const layer = view.el.querySelector(".radar"), tag = $("radarTag");
+  if(!base && !stored){
     layer.innerHTML = ""; view.shownKey = null;
-    tag.textContent = radarTimes.size ? "雨雲：直近3時間ほどのみ表示" : "雨雲：読み込めませんでした";
+    tag.textContent = !radarTimes.size ? "雨雲：読み込めませんでした"
+      : places[sel].radarId ? "雨雲：この時刻はまだたまっていません" : "雨雲：直近3時間ほどのみ表示";
     return;
   }
-  tag.textContent = `雨雲 ${hm(t)}`;
+  tag.textContent = stored ? `雨雲 ${hm(t)}（ためた分）` : `雨雲 ${hm(t)}`;
   if(view.shownKey === key) return;
   view.shownKey = key;
-  let rz = Math.min(10, view.z); if(rz % 2) rz--;
+  let rz = stored ? 8 : Math.min(10, view.z); if(rz % 2) rz--;
   const k = 2 ** (view.z - rz), size = 256 * k;
   let html = "";
   for(let tx = Math.floor(view.x0/size); tx <= Math.floor((view.x0+view.W)/size); tx++)
     for(let ty = Math.floor(view.y0/size); ty <= Math.floor((view.y0+view.H)/size); ty++)
-      html += `<img alt="" onerror="this.hidden=true" src="${NOWC}/${base}/none/${key}/surf/hrpns/${rz}/${tx}/${ty}.png" style="left:${tx*size - view.x0}px;top:${ty*size - view.y0}px;width:${size}px;height:${size}px">`;
+      html += `<img alt="" onerror="this.hidden=true" src="${stored ? `${RADAR_API}/tile/${key}/${rz}/${tx}/${ty}.png` : `${NOWC}/${base}/none/${key}/surf/hrpns/${rz}/${tx}/${ty}.png`}" style="left:${tx*size - view.x0}px;top:${ty*size - view.y0}px;width:${size}px;height:${size}px">`;
   layer.innerHTML = html;
 }
 
@@ -379,6 +395,10 @@ function drawPanel(p, stations, seriesList, home){
     <div class="chart" id="chart"><div class="since" style="width:${sincePct}%"></div>${bars}<div class="cursor" id="cursor"></div></div>
     <div class="axis">${ticks}</div>
     <div class="scale">${esc(p.stName)}の10分ごとの雨量${series.some(s => s.mm > 0) ? `・最大 ${max.toFixed(1)} mm` : "・24時間雨なし"}（色の薄い範囲は干す前）。グラフをタップするとその時刻に移動します。</div>
+    ${RADAR_API ? `<div class="keep">
+      <label for="keep">雨雲を24時間ためる<input type="checkbox" id="keep" ${p.radarId ? "checked" : ""}></label>
+      <p>データをためるため、この地点のまわり（半径約40km）の気象庁の雨雲画像を10分ごとにサーバーへ保存します。オンにした時点からたまり始め、地図で過去24時間の雨雲を見られるようになります。保存するのは地点のおおよその位置（約1km単位）だけで、30日アプリを開かないと保存を止めます。</p>
+      <p id="keepMsg" role="status"></p></div>` : ""}
   </section>`;
 
   const map = $("map");
@@ -405,7 +425,26 @@ function drawPanel(p, stations, seriesList, home){
     setPlayIcon(true);
     timer = setInterval(() => { if(idx >= STEPS - 1){ stop(); return; } idx++; update(); }, 180);
   };
+  if($("keep")) $("keep").onchange = async e => {
+    const on = e.target.checked, msg = $("keepMsg");
+    e.target.disabled = true; msg.textContent = on ? "登録しています…" : "止めています…";
+    try{
+      if(on){
+        const r = await fetch(`${RADAR_API}/places`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(home)});
+        const b = await r.json(); if(!r.ok) throw new Error(b.error || `HTTP ${r.status}`);
+        p.radarId = b.id; msg.textContent = "オンにしました。10分ごとにたまっていきます。";
+      }else{
+        await fetch(`${RADAR_API}/places/${p.radarId}`, {method:"DELETE"});
+        delete p.radarId; msg.textContent = "保存を止めました。";
+      }
+      store.set("places", places);
+    }catch(err){
+      e.target.checked = !on; msg.textContent = `うまくいきませんでした（${err.message}）。少し待ってからもう一度試してください。`;
+    }
+    e.target.disabled = false;
+  };
   $("del").onclick = () => {
+    if(p.radarId && RADAR_API) fetch(`${RADAR_API}/places/${p.radarId}`, {method:"DELETE"}).catch(() => {});
     places.splice(sel, 1); store.set("places", places);
     sel = 0; store.set("sel", 0); stop(); renderChips(); renderMain();
   };
