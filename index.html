@@ -61,6 +61,12 @@ button,select,input{font:inherit;color:inherit}
 .map svg{position:absolute;inset:0;width:100%;height:100%}
 .mk-label{font-size:11px;fill:var(--ink);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
 .mk-val{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}
+.map .base,.map .radar{position:absolute;inset:0}
+.map .radar img{position:absolute;opacity:.72;filter:none}
+.mapctl{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:6px;z-index:3}
+.mapctl button{width:36px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:20px;line-height:1;cursor:pointer}
+.mapctl button:disabled{opacity:.4;cursor:default}
+.maptag{position:absolute;left:8px;top:8px;z-index:3;font-size:11px;background:var(--surface);color:var(--muted);opacity:.9;padding:2px 6px;border-radius:6px;font-variant-numeric:tabular-nums}
 .attr{position:absolute;right:4px;bottom:2px;font-size:10px;color:var(--muted);background:var(--surface);opacity:.85;padding:0 4px;border-radius:4px}
 .attr a{color:inherit}
 
@@ -72,6 +78,7 @@ button,select,input{font:inherit;color:inherit}
 .play svg{width:18px;height:18px;fill:var(--accent)}
 input[type=range]{width:100%;accent-color:var(--accent);margin:0}
 .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.legend.radar-l i{border-radius:2px;width:12px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:3px;vertical-align:-1px}
 
 /* 24時間グラフ */
@@ -145,6 +152,7 @@ footer a{color:var(--muted)}
 const JMA = "https://www.jma.go.jp/bosai/amedas";
 const GSI = "https://msearch.gsi.go.jp/address-search/AddressSearch?q=";
 const TILE = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png";
+const NOWC = "https://www.jma.go.jp/bosai/jmatile/data/nowc";
 const MAX = 5, NEAR = 7, NEAR_KM = 30, STEPS = 144;
 const PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県","新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県","奈良県","和歌山県","鳥取県","島根県","岡山県","広島県","山口県","徳島県","香川県","愛媛県","高知県","福岡県","佐賀県","長崎県","熊本県","大分県","宮崎県","鹿児島県","沖縄県"];
 
@@ -155,6 +163,8 @@ const store = {
 let places = store.get("places", []);   // [{label, code, stName, lat, lon}]
 let sel = Math.min(store.get("sel", 0), Math.max(0, places.length - 1));
 let table = null, latest = null, idx = STEPS - 1, timer = null;
+let radarTimes = new Map();            // validtime(UTC文字列) -> basetime
+let zoomDelta = store.get("zoom", 0);   // 地図の拡大段階（0＝近くの地点が全部入る広さ）
 const seriesCache = new Map();          // code -> series
 
 const $ = id => document.getElementById(id);
@@ -225,22 +235,33 @@ function rainColor(mm){
   return "var(--r5)";
 }
 
-/* ---------- 地図（Webメルカトル、地理院タイル） ---------- */
+/* ---------- 地図（Webメルカトル、地理院タイル＋気象庁レーダー） ---------- */
 const wx = (lon, z) => (lon + 180) / 360 * 256 * 2**z;
 const wy = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * 256 * 2**z; };
+const utcKey = d => d.toISOString().replace(/[-:T]/g, "").slice(0, 14);
 
+// 降水ナウキャスト（レーダー実況）の時刻一覧。直近およそ3時間分
+async function loadRadarTimes(){
+  try{
+    const list = await getJSON(`${NOWC}/targetTimes_N1.json`);
+    radarTimes = new Map(list.filter(t => !t.elements || t.elements.includes("hrpns")).map(t => [t.validtime, t.basetime]));
+  }catch{ radarTimes = new Map(); }
+}
+
+let view = null;   // いま描いている地図の状態
 function buildMap(el, home, stations){
   const W = el.clientWidth || 360, H = el.clientHeight || 300;
-  let z = 13;
-  while(z > 8 && stations.some(s => Math.abs(wx(s.lon, z) - wx(home.lon, z)) > W/2 - 30 || Math.abs(wy(s.lat, z) - wy(home.lat, z)) > H/2 - 30)) z--;
+  let fit = 13;
+  while(fit > 8 && stations.some(s => Math.abs(wx(s.lon, fit) - wx(home.lon, fit)) > W/2 - 30 || Math.abs(wy(s.lat, fit) - wy(home.lat, fit)) > H/2 - 30)) fit--;
+  zoomDelta = Math.max(-1, Math.min(4, zoomDelta));
+  const z = fit + zoomDelta;
   const cx = wx(home.lon, z), cy = wy(home.lat, z), x0 = cx - W/2, y0 = cy - H/2;
-  let html = "";
+  let base = "";
   for(let tx = Math.floor(x0/256); tx <= Math.floor((x0+W)/256); tx++)
     for(let ty = Math.floor(y0/256); ty <= Math.floor((y0+H)/256); ty++)
-      html += `<img alt="" loading="lazy" onerror="this.hidden=true" src="${TILE.replace("{z}", z).replace("{x}", tx).replace("{y}", ty)}" style="left:${tx*256 - x0}px;top:${ty*256 - y0}px">`;
+      base += `<img alt="" loading="lazy" onerror="this.hidden=true" src="${TILE.replace("{z}", z).replace("{x}", tx).replace("{y}", ty)}" style="left:${tx*256 - x0}px;top:${ty*256 - y0}px">`;
   const pts = stations.map(s => ({...s, x: wx(s.lon, z) - x0, y: wy(s.lat, z) - y0}));
   let svg = `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">`;
-  // 家
   svg += `<g transform="translate(${W/2},${H/2})"><path d="M-8 2 L0 -7 L8 2 L8 9 L-8 9 Z" fill="var(--ink)" stroke="var(--surface)" stroke-width="2"/></g>`;
   pts.forEach((p, i) => {
     svg += `<g class="mk" data-i="${i}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">
@@ -248,8 +269,35 @@ function buildMap(el, home, stations){
       <text class="mk-val" text-anchor="middle" dy="4" fill="var(--ink)"></text>
       <text class="mk-label" text-anchor="middle" y="${i === 0 ? 31 : 27}">${esc(p.s.kjName)}</text></g>`;
   });
-  svg += `</svg><div class="attr"><a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a></div>`;
-  el.innerHTML = html + svg;
+  svg += `</svg>`;
+  const kmAcross = W * 40075 * Math.cos(home.lat * Math.PI / 180) / (256 * 2**z);
+  el.innerHTML = `<div class="base">${base}</div><div class="radar"></div>${svg}
+    <div class="maptag" id="radarTag"></div>
+    <div class="mapctl"><button type="button" id="zin" aria-label="拡大">＋</button><button type="button" id="zout" aria-label="縮小">－</button></div>
+    <div class="attr">横幅 約${kmAcross < 10 ? kmAcross.toFixed(1) : Math.round(kmAcross)}km・<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a></div>`;
+  view = {el, z, x0, y0, W, H, shownKey: null};
+  $("zin").disabled = zoomDelta >= 4; $("zout").disabled = zoomDelta <= -1;
+}
+
+// レーダー画像を重ねる（気象庁のタイルは偶数ズーム・最大10。足りない分は拡大して貼る）
+function paintRadar(t){
+  if(!view) return;
+  const key = utcKey(t), base = radarTimes.get(key), layer = view.el.querySelector(".radar"), tag = $("radarTag");
+  if(!base){
+    layer.innerHTML = ""; view.shownKey = null;
+    tag.textContent = radarTimes.size ? "雨雲：直近3時間ほどのみ表示" : "雨雲：読み込めませんでした";
+    return;
+  }
+  tag.textContent = `雨雲 ${hm(t)}`;
+  if(view.shownKey === key) return;
+  view.shownKey = key;
+  let rz = Math.min(10, view.z); if(rz % 2) rz--;
+  const k = 2 ** (view.z - rz), size = 256 * k;
+  let html = "";
+  for(let tx = Math.floor(view.x0/size); tx <= Math.floor((view.x0+view.W)/size); tx++)
+    for(let ty = Math.floor(view.y0/size); ty <= Math.floor((view.y0+view.H)/size); ty++)
+      html += `<img alt="" onerror="this.hidden=true" src="${NOWC}/${base}/none/${key}/surf/hrpns/${rz}/${tx}/${ty}.png" style="left:${tx*size - view.x0}px;top:${ty*size - view.y0}px;width:${size}px;height:${size}px">`;
+  layer.innerHTML = html;
 }
 
 function paintMap(el, seriesList){
@@ -261,6 +309,7 @@ function paintMap(el, seriesList){
     val.textContent = s.mm == null ? "欠" : s.mm > 0 ? s.mm.toFixed(1) : "0";
     val.setAttribute("fill", c && s.mm >= 3 && s.mm < 5 || c && s.mm >= 8 ? "var(--surface)" : "var(--ink)");
   });
+  paintRadar(seriesList[0][idx].t);
 }
 
 /* ---------- 画面 ---------- */
@@ -325,7 +374,8 @@ function drawPanel(p, stations, seriesList, home){
       <button class="play" type="button" id="play" aria-label="干した時刻から再生"></button>
     </div>
     <input type="range" id="slider" min="0" max="${STEPS - 1}" step="1" aria-label="時刻">
-    <div class="legend"><span>10分間の雨量</span><span><i style="background:var(--r1)"></i>0.5</span><span><i style="background:var(--r2)"></i>1〜</span><span><i style="background:var(--r3)"></i>3〜</span><span><i style="background:var(--r4)"></i>5〜</span><span><i style="background:var(--r5)"></i>8mm〜</span></div>
+    <div class="legend radar-l" id="radarLegend"><span>雨雲（mm/h）</span><span><i style="background:#f2f2ff"></i>1</span><span><i style="background:#a0d2ff"></i>5</span><span><i style="background:#218cff"></i>10</span><span><i style="background:#0041ff"></i>20</span><span><i style="background:#fff500"></i>30</span><span><i style="background:#ff9900"></i>50</span><span><i style="background:#ff2800"></i>80〜</span></div>
+    <div class="legend"><span>丸＝10分間の雨量</span><span><i style="background:var(--r1)"></i>0.5</span><span><i style="background:var(--r2)"></i>1〜</span><span><i style="background:var(--r3)"></i>3〜</span><span><i style="background:var(--r4)"></i>5〜</span><span><i style="background:var(--r5)"></i>8mm〜</span></div>
     <div class="chart" id="chart"><div class="since" style="width:${sincePct}%"></div>${bars}<div class="cursor" id="cursor"></div></div>
     <div class="axis">${ticks}</div>
     <div class="scale">${esc(p.stName)}の10分ごとの雨量${series.some(s => s.mm > 0) ? `・最大 ${max.toFixed(1)} mm` : "・24時間雨なし"}（色の薄い範囲は干す前）。グラフをタップするとその時刻に移動します。</div>
@@ -333,6 +383,9 @@ function drawPanel(p, stations, seriesList, home){
 
   const map = $("map");
   buildMap(map, home, stations);
+  const rezoom = d => { zoomDelta += d; store.set("zoom", zoomDelta); buildMap(map, home, stations); wireZoom(); update(); };
+  const wireZoom = () => { $("zin").onclick = () => rezoom(1); $("zout").onclick = () => rezoom(-1); };
+  wireZoom();
   const slider = $("slider");
   const update = () => {
     slider.value = idx;
@@ -378,6 +431,7 @@ async function refresh(){
     $("updated").textContent = "読み込み失敗"; return;
   }
   seriesCache.clear(); idx = STEPS - 1; stop();
+  await loadRadarTimes();
   renderChips(); renderMain();
 }
 
