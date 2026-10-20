@@ -16,3 +16,8 @@ CREATE TABLE IF NOT EXISTS frames (
   PRIMARY KEY (validtime, z, x, y)
 );
 CREATE INDEX IF NOT EXISTS frames_time ON frames (validtime);
+-- 最後の保存処理の結果（動作確認用）
+CREATE TABLE IF NOT EXISTS meta (
+  k TEXT PRIMARY KEY,
+  v TEXT
+);

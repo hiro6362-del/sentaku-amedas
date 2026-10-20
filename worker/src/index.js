@@ -29,11 +29,26 @@ const utcKey = d => d.toISOString().replace(/[-:T]/g, "").slice(0, 14);
 const validPoint = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && lat > 20 && lat < 46 && lon > 122 && lon < 154;
 
 async function collect(env) {
+  const started = new Date().toISOString();
+  try{
+    const saved = await collectInner(env);
+    await setMeta(env, {last_run: started, last_error: "", last_saved: String(saved)});
+  }catch(e){
+    await setMeta(env, {last_run: started, last_error: String(e && e.stack || e)}).catch(() => {});
+    throw e;
+  }
+}
+async function setMeta(env, kv){
+  await env.DB.batch(Object.entries(kv).map(([k, v]) => env.DB.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)").bind(k, v)));
+}
+
+async function collectInner(env) {
   const now = Date.now(), nowc = env.NOWC || NOWC;   // NOWC は動作確認用の差し替え口
   const places = (await env.DB.prepare("SELECT lat, lon FROM places WHERE last_seen > ?")
     .bind(now - ACTIVE_DAYS * 86400e3).all()).results;
   await env.DB.prepare("DELETE FROM frames WHERE validtime < ?").bind(utcKey(new Date(now - KEEP_HOURS * 3600e3))).run();
-  if (!places.length) return;
+  if (!places.length) return 0;
+  let saved = 0;
 
   const tiles = new Set(places.flatMap(p => tilesAround(p.lat, p.lon)));
   const times = await (await fetch(`${nowc}/targetTimes_N1.json`)).json();
@@ -53,7 +68,9 @@ async function collect(env) {
         .bind(t.validtime, Z, x, y, png && png.length ? png : null);
     }));
     if (rows.length) await env.DB.batch(rows);
+    saved += rows.length;
   }
+  return saved;
 }
 
 async function handle(req, env) {
@@ -73,6 +90,13 @@ async function handle(req, env) {
   if (req.method === "GET" && parts[0] === "times") {
     const r = await env.DB.prepare("SELECT DISTINCT validtime FROM frames ORDER BY validtime").all();
     return json(r.results.map(x => x.validtime));
+  }
+  // 動作確認用：登録地点の数と最後の保存処理の結果
+  if (req.method === "GET" && parts[0] === "status") {
+    const n = (await env.DB.prepare("SELECT COUNT(*) AS n FROM places").first()).n;
+    const f = (await env.DB.prepare("SELECT COUNT(*) AS n FROM frames").first()).n;
+    const meta = Object.fromEntries((await env.DB.prepare("SELECT k, v FROM meta").all()).results.map(r => [r.k, r.v]));
+    return json({ places: n, frames: f, ...meta });
   }
   // 地点の登録
   if (req.method === "POST" && parts[0] === "places" && parts.length === 1) {
