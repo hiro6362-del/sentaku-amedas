@@ -96,7 +96,8 @@ async function handle(req, env) {
     const n = (await env.DB.prepare("SELECT COUNT(*) AS n FROM places").first()).n;
     const f = (await env.DB.prepare("SELECT COUNT(*) AS n FROM frames").first()).n;
     const meta = Object.fromEntries((await env.DB.prepare("SELECT k, v FROM meta").all()).results.map(r => [r.k, r.v]));
-    return json({ places: n, frames: f, ...meta });
+    const t = (await env.DB.prepare("SELECT validtime, COUNT(*) AS n, SUM(png IS NOT NULL) AS rain FROM frames GROUP BY validtime ORDER BY validtime DESC LIMIT 6").all()).results;
+    return json({ places: n, frames: f, recent: t, ...meta });
   }
   // 地点の登録
   if (req.method === "POST" && parts[0] === "places" && parts.length === 1) {
