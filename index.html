@@ -170,7 +170,7 @@ const store = {
 };
 let places = store.get("places", []);   // [{label, code, stName, lat, lon}]
 let sel = Math.min(store.get("sel", 0), Math.max(0, places.length - 1));
-let table = null, latest = null, idx = STEPS - 1, timer = null;
+let table = null, latest = null, idx = STEPS - 1, timer = null, paused = false;
 let radarTimes = new Map();            // validtime(UTC文字列) -> basetime
 let storedTimes = new Set();           // サーバーにためてある時刻（UTC文字列）
 let zoomDelta = store.get("zoom", 0);   // 地図の拡大段階（0＝近くの地点が全部入る広さ）
@@ -387,7 +387,7 @@ function drawPanel(p, stations, seriesList, home){
     <div class="timebar">
       <div class="now" id="now"></div>
       <div class="grow" id="nowNote"></div>
-      <button class="play" type="button" id="play" aria-label="干した時刻から再生"></button>
+      <button class="play" type="button" id="play" aria-label="24時間の最初から再生"></button>
     </div>
     <input type="range" id="slider" min="0" max="${STEPS - 1}" step="1" aria-label="時刻">
     <div class="legend radar-l" id="radarLegend"><span>雨雲（mm/h）</span><span><i style="background:#f2f2ff"></i>1</span><span><i style="background:#a0d2ff"></i>5</span><span><i style="background:#218cff"></i>10</span><span><i style="background:#0041ff"></i>20</span><span><i style="background:#fff500"></i>30</span><span><i style="background:#ff9900"></i>50</span><span><i style="background:#ff2800"></i>80〜</span></div>
@@ -416,13 +416,13 @@ function drawPanel(p, stations, seriesList, home){
     $("cursor").style.left = `${(idx + .5) / STEPS * 100}%`;
     paintMap(map, seriesList);
   };
-  slider.oninput = () => { stop(); idx = +slider.value; update(); };
-  $("chart").onclick = e => { const r = e.currentTarget.getBoundingClientRect(); stop(); idx = Math.max(0, Math.min(STEPS-1, Math.floor((e.clientX - r.left) / r.width * STEPS))); update(); };
+  slider.oninput = () => { stop(); paused = false; idx = +slider.value; update(); };
+  $("chart").onclick = e => { const r = e.currentTarget.getBoundingClientRect(); stop(); paused = false; idx = Math.max(0, Math.min(STEPS-1, Math.floor((e.clientX - r.left) / r.width * STEPS))); update(); };
   $("play").onclick = () => {
-    if(timer){ stop(); return; }
-    const start = series.findIndex(s => s.t > from);
-    if(idx >= STEPS - 1 || idx < start) idx = Math.max(0, start);
-    setPlayIcon(true);
+    if(timer){ stop(); paused = true; return; }
+    if(!paused || idx >= STEPS - 1) idx = 0;   // 一時停止からの再開以外は、24時間のいちばん最初から
+    paused = false;
+    update(); setPlayIcon(true);
     timer = setInterval(() => { if(idx >= STEPS - 1){ stop(); return; } idx++; update(); }, 180);
   };
   if($("keep")) $("keep").onchange = async e => {
@@ -455,7 +455,7 @@ function setPlayIcon(playing){
   const b = $("play"); if(!b) return;
   b.innerHTML = playing ? `<svg viewBox="0 0 18 18"><rect x="3" y="2" width="4" height="14"/><rect x="11" y="2" width="4" height="14"/></svg>`
                         : `<svg viewBox="0 0 18 18"><path d="M4 2 L16 9 L4 16 Z"/></svg>`;
-  b.setAttribute("aria-label", playing ? "止める" : "干した時刻から再生");
+  b.setAttribute("aria-label", playing ? "止める" : "24時間の最初から再生");
 }
 function stop(){ if(timer){ clearInterval(timer); timer = null; } setPlayIcon(false); }
 
